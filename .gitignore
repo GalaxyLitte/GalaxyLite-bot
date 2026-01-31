@@ -1,0 +1,446 @@
+class SQLiteStorage:
+    def __init__(self, guild_id: str):
+        self.guild_id = str(guild_id)
+        self.db_path = f'databases/{self.guild_id}.db'
+        self.ensure_directory()
+        
+        # Проверяем существует ли файл БД
+        if not os.path.exists(self.db_path):
+            print(f"📁 Создаем БД для сервера {self.guild_id}")
+            self.init_database()
+        else:
+            # Проверяем структуру таблиц
+            self.check_tables()
+    
+    def ensure_directory(self):
+        """Создаем папку для баз данных если её нет"""
+        if not os.path.exists('databases'):
+            try:
+                os.makedirs('databases')
+                print(f"📁 Создана папка databases")
+            except Exception as e:
+                print(f"❌ Не удалось создать папку: {e}")
+    
+    def check_tables(self):
+        """Проверяем существование всех таблиц и их структуру"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Список таблиц которые должны быть
+            required_tables = [
+                'settings',
+                'warn_settings', 
+                'warnings',
+                'users',
+                'bad_words',
+                'automod',
+                'relationships',
+                'relationship_proposals',
+                'automod_learning',
+                'automod_patterns',
+                'spam_patterns',
+                'message_context'
+            ]
+            
+            # Проверяем существование таблиц
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            existing_tables = [table[0] for table in cursor.fetchall()]
+            
+            missing_tables = []
+            for table in required_tables:
+                if table not in existing_tables:
+                    missing_tables.append(table)
+            
+            if missing_tables:
+                print(f"⚠️ В БД {self.guild_id} отсутствуют таблицы: {missing_tables}")
+                # Создаем недостающие таблицы
+                self._create_missing_tables(missing_tables)
+            else:
+                print(f"✅ БД {self.guild_id} проверена, все таблицы на месте")
+            
+            conn.close()
+            
+        except Exception as e:
+            print(f"❌ Ошибка при проверке таблиц: {e}")
+            # Если произошла ошибка, пересоздаем БД
+            self._recreate_database()
+    
+    def _create_missing_tables(self, missing_tables):
+        """Создаем недостающие таблицы"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            for table in missing_tables:
+                if table == 'settings':
+                    cursor.execute('''
+                        CREATE TABLE settings (
+                            key TEXT PRIMARY KEY,
+                            value TEXT
+                        )
+                    ''')
+                elif table == 'warn_settings':
+                    cursor.execute('''
+                        CREATE TABLE warn_settings (
+                            key TEXT PRIMARY KEY,
+                            value TEXT
+                        )
+                    ''')
+                elif table == 'warnings':
+                    cursor.execute('''
+                        CREATE TABLE warnings (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id TEXT,
+                            moderator_id TEXT,
+                            reason TEXT,
+                            timestamp REAL
+                        )
+                    ''')
+                elif table == 'users':
+                    cursor.execute('''
+                        CREATE TABLE users (
+                            user_id TEXT PRIMARY KEY,
+                            balance INTEGER DEFAULT 0,
+                            daily_last_claimed REAL DEFAULT 0
+                        )
+                    ''')
+                elif table == 'bad_words':
+                    cursor.execute('''
+                        CREATE TABLE bad_words (
+                            word TEXT PRIMARY KEY
+                        )
+                    ''')
+                elif table == 'automod':
+                    cursor.execute('''
+                        CREATE TABLE automod (
+                            setting TEXT PRIMARY KEY,
+                            value TEXT
+                        )
+                    ''')
+                elif table == 'relationships':
+                    cursor.execute('''
+                        CREATE TABLE relationships (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user1_id TEXT NOT NULL,
+                            user2_id TEXT NOT NULL,
+                            relationship_type TEXT DEFAULT 'relationship',
+                            created_at REAL NOT NULL,
+                            status TEXT DEFAULT 'active',
+                            love_points INTEGER DEFAULT 50,
+                            money_pool INTEGER DEFAULT 0,
+                            divorce_requested INTEGER DEFAULT 0
+                        )
+                    ''')
+                elif table == 'relationship_proposals':
+                    cursor.execute('''
+                        CREATE TABLE relationship_proposals (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            from_user_id TEXT NOT NULL,
+                            to_user_id TEXT NOT NULL,
+                            relationship_type TEXT DEFAULT 'relationship',
+                            created_at REAL NOT NULL,
+                            status TEXT DEFAULT 'pending'
+                        )
+                    ''')
+                elif table == 'automod_learning':
+                    cursor.execute('''
+                        CREATE TABLE automod_learning (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            message_content TEXT,
+                            action TEXT,
+                            moderator_id TEXT,
+                            reason TEXT,
+                            severity INTEGER DEFAULT 1,
+                            timestamp REAL,
+                            guild_id TEXT
+                        )
+                    ''')
+                elif table == 'automod_patterns':
+                    cursor.execute('''
+                        CREATE TABLE automod_patterns (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            pattern TEXT,
+                            action TEXT,
+                            severity INTEGER,
+                            confidence REAL DEFAULT 0.5,
+                            learned_from INTEGER DEFAULT 0,
+                            last_used REAL
+                        )
+                    ''')
+                elif table == 'spam_patterns':
+                    cursor.execute('''
+                        CREATE TABLE spam_patterns (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id TEXT,
+                            message_count INTEGER DEFAULT 1,
+                            last_messages TEXT,
+                            timestamp REAL,
+                            flagged INTEGER DEFAULT 0
+                        )
+                    ''')
+                elif table == 'message_context':
+                    cursor.execute('''
+                        CREATE TABLE message_context (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id TEXT,
+                            message TEXT,
+                            timestamp REAL,
+                            guild_id TEXT
+                        )
+                    ''')
+                
+                print(f"✅ Создана таблица: {table}")
+            
+            # Добавляем дефолтные данные если нужно
+            self._add_default_data(cursor)
+            
+            conn.commit()
+            print(f"✅ Все недостающие таблицы созданы для сервера {self.guild_id}")
+            
+        except Exception as e:
+            print(f"❌ Ошибка при создании таблиц: {e}")
+            conn.rollback()
+            # Пробуем пересоздать БД с нуля
+            self._recreate_database()
+        finally:
+            conn.close()
+    
+    def _add_default_data(self, cursor):
+        """Добавляем дефолтные настройки"""
+        # Вставляем дефолтные настройки автомодерации
+        default_automod = [
+            ('enabled', 'true'),
+            ('anti_spam', 'true'),
+            ('anti_mention', 'true'),
+            ('anti_caps', 'true'),
+            ('anti_bad_words', 'true'),
+            ('anti_repeat', 'true'),
+            ('anti_emoji_spam', 'true'),
+            ('anti_invites', 'true'),
+            ('spam_limit', '5'),
+            ('spam_time', '5'),
+            ('mention_limit', '5'),
+            ('caps_threshold', '0.7')
+        ]
+        
+        # Вставляем дефолтные настройки варнов
+        default_warn_settings = [
+            ('warn1_action', 'none'),
+            ('warn2_action', 'none'),
+            ('warn3_action', 'mute'),
+            ('warn3_duration', '3600'),  # 1 час в секундах
+            ('warn4_action', 'mute'),
+            ('warn4_duration', '86400'),  # 24 часа в секундах
+            ('warn5_action', 'ban'),
+            ('warn5_duration', '0'),
+            ('max_warnings', '10'),
+            ('mute_role_id', 'none'),
+            ('log_channel_id', 'none')
+        ]
+        
+        try:
+            cursor.executemany('''
+                INSERT OR IGNORE INTO automod (setting, value) 
+                VALUES (?, ?)
+            ''', default_automod)
+            
+            cursor.executemany('''
+                INSERT OR IGNORE INTO warn_settings (key, value) 
+                VALUES (?, ?)
+            ''', default_warn_settings)
+        except Exception as e:
+            print(f"⚠️ Ошибка при добавлении дефолтных данных: {e}")
+    
+    def _recreate_database(self):
+        """Пересоздаем БД с нуля"""
+        try:
+            # Удаляем старый файл
+            if os.path.exists(self.db_path):
+                os.remove(self.db_path)
+                print(f"🗑️ Удален старый файл БД: {self.db_path}")
+            
+            # Создаем новую БД
+            self.init_database()
+            print(f"✅ БД пересоздана для сервера {self.guild_id}")
+            
+        except Exception as e:
+            print(f"❌ Критическая ошибка при пересоздании БД: {e}")
+    
+
+    def init_database(self):
+        """Инициализация базы данных для сервера"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Таблица настроек
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        
+        # Таблица настроек варнов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS warn_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        
+        # Таблица предупреждений
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS warnings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                moderator_id TEXT,
+                reason TEXT,
+                timestamp REAL
+            )
+        ''')
+        
+        # Таблица пользовательских данных
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                balance INTEGER DEFAULT 0,
+                daily_last_claimed REAL DEFAULT 0
+            )
+        ''')
+        
+        # Таблица запрещенных слов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bad_words (
+                word TEXT PRIMARY KEY
+            )
+        ''')
+        
+        # Таблица автомодерации
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS automod (
+                setting TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        
+        # Таблица отношений
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS relationships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user1_id TEXT NOT NULL,
+                user2_id TEXT NOT NULL,
+                relationship_type TEXT DEFAULT 'relationship',
+                created_at REAL NOT NULL,
+                status TEXT DEFAULT 'active',
+                love_points INTEGER DEFAULT 50,
+                money_pool INTEGER DEFAULT 0,
+                divorce_requested INTEGER DEFAULT 0
+            )
+        ''')
+        
+        # Таблица предложений отношений
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS relationship_proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_user_id TEXT NOT NULL,
+                to_user_id TEXT NOT NULL,
+                relationship_type TEXT DEFAULT 'relationship',
+                created_at REAL NOT NULL,
+                status TEXT DEFAULT 'pending'
+            )
+        ''')
+        
+        # Таблица обучения автомодерации
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS automod_learning (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_content TEXT,
+                action TEXT,
+                moderator_id TEXT,
+                reason TEXT,
+                severity INTEGER DEFAULT 1,
+                timestamp REAL,
+                guild_id TEXT
+            )
+        ''')
+        
+        # Таблица паттернов плохого поведения
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS automod_patterns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern TEXT,
+                action TEXT,
+                severity INTEGER,
+                confidence REAL DEFAULT 0.5,
+                learned_from INTEGER DEFAULT 0,
+                last_used REAL
+            )
+        ''')
+        
+        # Таблица спам паттернов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS spam_patterns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                message_count INTEGER DEFAULT 1,
+                last_messages TEXT,
+                timestamp REAL,
+                flagged INTEGER DEFAULT 0
+            )
+        ''')
+        
+        # Таблица контекста сообщений
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS message_context (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                message TEXT,
+                timestamp REAL,
+                guild_id TEXT
+            )
+        ''')
+        
+        # Вставляем дефолтные настройки автомодерации
+        default_automod = [
+            ('enabled', 'true'),
+            ('anti_spam', 'true'),
+            ('anti_mention', 'true'),
+            ('anti_caps', 'true'),
+            ('anti_bad_words', 'true'),
+            ('anti_repeat', 'true'),
+            ('anti_emoji_spam', 'true'),
+            ('anti_invites', 'true'),
+            ('spam_limit', '5'),
+            ('spam_time', '5'),
+            ('mention_limit', '5'),
+            ('caps_threshold', '0.7')
+        ]
+        
+        # Вставляем дефолтные настройки варнов
+        default_warn_settings = [
+            ('warn1_action', 'none'),
+            ('warn2_action', 'none'),
+            ('warn3_action', 'mute'),
+            ('warn3_duration', '3600'),  # 1 час в секундах
+            ('warn4_action', 'mute'),
+            ('warn4_duration', '86400'),  # 24 часа в секундах
+            ('warn5_action', 'ban'),
+            ('warn5_duration', '0'),
+            ('max_warnings', '10'),
+            ('mute_role_id', 'none'),
+            ('log_channel_id', 'none')
+        ]
+        
+        cursor.executemany('''
+            INSERT OR IGNORE INTO automod (setting, value) 
+            VALUES (?, ?)
+        ''', default_automod)
+        
+        cursor.executemany('''
+            INSERT OR IGNORE INTO warn_settings (key, value) 
+            VALUES (?, ?)
+        ''', default_warn_settings)
+        
+        conn.commit()
+        conn.close()
